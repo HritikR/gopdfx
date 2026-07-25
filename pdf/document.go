@@ -112,7 +112,17 @@ func (d *Document) loadXrefAndTrailer(offset int64) error {
 			return fmt.Errorf("expected /Type /XRef for xref stream, got /%s", typeVal)
 		}
 
-		entries, err = ParseXrefStream(stream)
+		decodedData, err := stream.Decode()
+		if err != nil {
+			return fmt.Errorf("failed to decode xref stream: %v", err)
+		}
+
+		decodedStream := &Stream{
+			Dict: stream.Dict,
+			Data: decodedData,
+		}
+
+		entries, err = ParseXrefStream(decodedStream)
 		if err != nil {
 			return err
 		}
@@ -192,8 +202,18 @@ func (d *Document) Resolve(ref IndirectRef) (Object, error) {
 			return nil, fmt.Errorf("expected stream for object stream %d, got %T", entry.Offset, stmObj)
 		}
 
+		decodedData, err := stream.Decode()
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode object stream %d: %v", entry.Offset, err)
+		}
+
+		decodedStream := &Stream{
+			Dict: stream.Dict,
+			Data: decodedData,
+		}
+
 		// Parse all objects inside the object stream and cache them
-		objs, err := d.parseObjectStream(stream)
+		objs, err := d.parseObjectStream(decodedStream)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse object stream %d: %v", entry.Offset, err)
 		}
