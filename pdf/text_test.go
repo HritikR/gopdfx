@@ -169,3 +169,31 @@ func TestText_InheritedResources(t *testing.T) {
 		t.Errorf("Expected extracted text %q, got %q", expectedText, text)
 	}
 }
+
+func TestText_PageTextElements(t *testing.T) {
+	content := []byte(`BT
+/F1 12 Tf
+100 700 Td
+(Col1) Tj
+200 0 Td
+(Col2) Tj
+ET`)
+
+	doc := &Document{}
+	elements, err := doc.extractTextElements(content, nil)
+	if err != nil {
+		t.Fatalf("extractTextElements failed: %v", err)
+	}
+
+	if len(elements) != 2 {
+		t.Fatalf("Expected 2 elements, got %d", len(elements))
+	}
+
+	if elements[0].Text != "Col1" || elements[0].X != 100 || elements[0].Y != 700 {
+		t.Errorf("First element mismatch: %+v", elements[0])
+	}
+
+	if elements[1].Text != "Col2" || elements[1].X != 300 || elements[1].Y != 700 {
+		t.Errorf("Second element mismatch: %+v", elements[1])
+	}
+}

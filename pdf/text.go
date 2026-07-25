@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
+	"strings"
 	"unicode/utf16"
 )
 
@@ -30,6 +32,19 @@ type Font struct {
 	Name    Name
 	Subtype Name
 	CMap    *CMap
+}
+
+type TextElement struct {
+	X    float64
+	Y    float64
+	Text string
+}
+
+type textElement struct {
+	x    float64
+	y    float64
+	text string
+	idx  int
 }
 
 func (c *CMap) Lookup(code uint32) (string, bool) {
@@ -352,69 +367,16 @@ func (d *Document) readStreamData(ref IndirectRef) ([]byte, error) {
 	return stream.Decode()
 }
 
-func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (string, error) {
-	var result bytes.Buffer
+func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]TextElement, error) {
 	resolvedFonts := make(map[Name]*Font)
 	var currentFont *Font
 	var stack []Object
+	var elements []textElement
+	elementCount := 0
 
-	// Layout and line tracking variables
-	var ty float64
-	var lastY float64
-	var hasLastY bool
+	// Layout and position coordinates tracking
+	var tx, ty float64
 	leading := 12.0
-
-	writeRune := func(r rune) {
-		if r == ' ' {
-			b := result.Bytes()
-			n := len(b)
-			if n > 0 && (b[n-1] == ' ' || b[n-1] == '\n') {
-				return
-			}
-			result.WriteByte(' ')
-			return
-		}
-		if r == '\n' || r == '\r' {
-			b := result.Bytes()
-			n := len(b)
-			for n > 0 && b[n-1] == ' ' {
-				result.Truncate(n - 1)
-				b = result.Bytes()
-				n = len(b)
-			}
-			if n >= 2 && b[n-1] == '\n' && b[n-2] == '\n' {
-				return
-			}
-			result.WriteByte('\n')
-			return
-		}
-		result.WriteRune(r)
-	}
-
-	writeString := func(s string) {
-		for _, r := range s {
-			writeRune(r)
-		}
-	}
-
-	checkY := func(y float64) {
-		if !hasLastY {
-			lastY = y
-			hasLastY = true
-			return
-		}
-		diff := math.Abs(y - lastY)
-		if diff > 2.0 {
-			writeRune('\n')
-			lastY = y
-		} else {
-			b := result.Bytes()
-			n := len(b)
-			if n > 0 && b[n-1] != ' ' && b[n-1] != '\n' {
-				writeRune(' ')
-			}
-		}
-	}
 
 	l := NewLexer(content)
 	for {
@@ -441,19 +403,20 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 		case tokLeftBracket:
 			arr, err := parseContentArray(l)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			stack = append(stack, arr)
 		case tokLeftDict:
 			dict, err := parseContentDict(l)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			stack = append(stack, dict)
 		case tokKeyword:
 			op := tok.val
 			switch op {
 			case "BT":
+				tx = 0.0
 				ty = 0.0
 				stack = nil
 			case "ET":
@@ -483,24 +446,27 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 				stack = nil
 			case "Td":
 				if len(stack) >= 2 {
-					if yVal, ok := AsFloat(stack[len(stack)-1]); ok {
-						ty += yVal
-					}
+					xVal, _ := AsFloat(stack[len(stack)-2])
+					yVal, _ := AsFloat(stack[len(stack)-1])
+					tx += xVal
+					ty += yVal
 				}
 				stack = nil
 			case "TD":
 				if len(stack) >= 2 {
-					if yVal, ok := AsFloat(stack[len(stack)-1]); ok {
-						leading = -yVal
-						ty += yVal
-					}
+					xVal, _ := AsFloat(stack[len(stack)-2])
+					yVal, _ := AsFloat(stack[len(stack)-1])
+					leading = -yVal
+					tx += xVal
+					ty += yVal
 				}
 				stack = nil
 			case "Tm":
 				if len(stack) >= 6 {
-					if yVal, ok := AsFloat(stack[len(stack)-1]); ok {
-						ty = yVal
-					}
+					xVal, _ := AsFloat(stack[len(stack)-2])
+					yVal, _ := AsFloat(stack[len(stack)-1])
+					tx = xVal
+					ty = yVal
 				}
 				stack = nil
 			case "T*":
@@ -509,32 +475,44 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 			case "Tj":
 				if len(stack) >= 1 {
 					if strObj, ok := AsString(stack[len(stack)-1]); ok {
-						checkY(ty)
 						text := strObj
 						if currentFont != nil {
 							text = currentFont.DecodeString(strObj)
 						}
-						writeString(text)
+						elements = append(elements, textElement{
+							x:    tx,
+							y:    ty,
+							text: text,
+							idx:  elementCount,
+						})
+						elementCount++
 					}
 				}
 				stack = nil
 			case "TJ":
 				if len(stack) >= 1 {
 					if arr, ok := AsArray(stack[len(stack)-1]); ok {
-						checkY(ty)
+						var sb strings.Builder
 						for _, item := range arr {
 							if strObj, ok := AsString(item); ok {
 								text := strObj
 								if currentFont != nil {
 									text = currentFont.DecodeString(strObj)
 								}
-								writeString(text)
+								sb.WriteString(text)
 							} else if num, ok := AsFloat(item); ok {
 								if num <= -100 {
-									writeRune(' ')
+									sb.WriteByte(' ')
 								}
 							}
 						}
+						elements = append(elements, textElement{
+							x:    tx,
+							y:    ty,
+							text: sb.String(),
+							idx:  elementCount,
+						})
+						elementCount++
 					}
 				}
 				stack = nil
@@ -542,12 +520,17 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 				ty -= leading
 				if len(stack) >= 1 {
 					if strObj, ok := AsString(stack[len(stack)-1]); ok {
-						checkY(ty)
 						text := strObj
 						if currentFont != nil {
 							text = currentFont.DecodeString(strObj)
 						}
-						writeString(text)
+						elements = append(elements, textElement{
+							x:    tx,
+							y:    ty,
+							text: text,
+							idx:  elementCount,
+						})
+						elementCount++
 					}
 				}
 				stack = nil
@@ -555,12 +538,17 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 				ty -= leading
 				if len(stack) >= 1 {
 					if strObj, ok := AsString(stack[len(stack)-1]); ok {
-						checkY(ty)
 						text := strObj
 						if currentFont != nil {
 							text = currentFont.DecodeString(strObj)
 						}
-						writeString(text)
+						elements = append(elements, textElement{
+							x:    tx,
+							y:    ty,
+							text: text,
+							idx:  elementCount,
+						})
+						elementCount++
 					}
 				}
 				stack = nil
@@ -569,6 +557,86 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 			}
 		}
 	}
+
+	// Layout Reconstruction: Group elements into rows by their Y coordinate
+	type row struct {
+		y        float64
+		elements []textElement
+	}
+	var rows []row
+
+	for _, el := range elements {
+		found := false
+		for i := range rows {
+			if math.Abs(rows[i].y-el.y) <= 2.0 {
+				rows[i].elements = append(rows[i].elements, el)
+				found = true
+				break
+			}
+		}
+		if !found {
+			rows = append(rows, row{
+				y:        el.y,
+				elements: []textElement{el},
+			})
+		}
+	}
+
+	// Sort rows top-to-bottom (Y descending)
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].y > rows[j].y
+	})
+
+	var sortedElements []TextElement
+	for _, r := range rows {
+		// Sort elements within each row left-to-right (X ascending)
+		sort.Slice(r.elements, func(i, j int) bool {
+			if r.elements[i].x == r.elements[j].x {
+				return r.elements[i].idx < r.elements[j].idx
+			}
+			return r.elements[i].x < r.elements[j].x
+		})
+
+		for _, el := range r.elements {
+			sortedElements = append(sortedElements, TextElement{
+				X:    el.x,
+				Y:    el.y,
+				Text: el.text,
+			})
+		}
+	}
+
+	return sortedElements, nil
+}
+
+func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (string, error) {
+	elements, err := d.extractTextElements(content, pageDict)
+	if err != nil {
+		return "", err
+	}
+
+	var result bytes.Buffer
+	var lastY float64
+	var hasLastY bool
+
+	for _, el := range elements {
+		if !hasLastY {
+			lastY = el.Y
+			hasLastY = true
+		} else if math.Abs(el.Y-lastY) > 2.0 {
+			result.WriteByte('\n')
+			lastY = el.Y
+		} else {
+			b := result.Bytes()
+			// Insert space separator between columns if not already spaced
+			if len(b) > 0 && b[len(b)-1] != ' ' && b[len(b)-1] != '\n' {
+				result.WriteByte(' ')
+			}
+		}
+		result.WriteString(el.Text)
+	}
+
+	// Normalize trailing newlines
 	res := result.String()
 	if len(res) > 0 && res[len(res)-1] != '\n' {
 		res += "\n"
@@ -772,4 +840,40 @@ func (p *Page) Text() (string, error) {
 	}
 
 	return p.doc.parseContentStream(contentBytes, p.Dict)
+}
+
+func (p *Page) TextElements() ([]TextElement, error) {
+	contentsObj, ok := p.Dict[Name("Contents")]
+	if !ok {
+		return nil, nil
+	}
+
+	var contentBytes []byte
+
+	if ref, ok := AsRef(contentsObj); ok {
+		data, err := p.doc.readStreamData(ref)
+		if err != nil {
+			return nil, err
+		}
+		contentBytes = data
+	} else if arr, ok := AsArray(contentsObj); ok {
+		var buf bytes.Buffer
+		for _, refObj := range arr {
+			ref, ok := AsRef(refObj)
+			if !ok {
+				continue
+			}
+			data, err := p.doc.readStreamData(ref)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(data)
+			buf.WriteByte(' ')
+		}
+		contentBytes = buf.Bytes()
+	} else {
+		return nil, fmt.Errorf("invalid Contents type: %T", contentsObj)
+	}
+
+	return p.doc.extractTextElements(contentBytes, p.Dict)
 }
