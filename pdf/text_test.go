@@ -65,8 +65,8 @@ ET`)
 		t.Fatalf("parseContentStream failed: %v", err)
 	}
 
-	// Hello + World (since -120 is spacing) + with (since -50 is not enough for a space) + spacing
-	expected := "HelloWorld withspacing\n"
+	// Hello + space (same Y line grouping) + World + with + spacing
+	expected := "Hello World withspacing\n"
 	if txt != expected {
 		t.Errorf("Expected %q, got %q", expected, txt)
 	}

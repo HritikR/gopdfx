@@ -3,6 +3,7 @@ package pdf
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strconv"
 	"unicode/utf16"
 )
@@ -357,6 +358,64 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 	var currentFont *Font
 	var stack []Object
 
+	// Layout and line tracking variables
+	var ty float64
+	var lastY float64
+	var hasLastY bool
+	leading := 12.0
+
+	writeRune := func(r rune) {
+		if r == ' ' {
+			b := result.Bytes()
+			n := len(b)
+			if n > 0 && (b[n-1] == ' ' || b[n-1] == '\n') {
+				return
+			}
+			result.WriteByte(' ')
+			return
+		}
+		if r == '\n' || r == '\r' {
+			b := result.Bytes()
+			n := len(b)
+			for n > 0 && b[n-1] == ' ' {
+				result.Truncate(n - 1)
+				b = result.Bytes()
+				n = len(b)
+			}
+			if n >= 2 && b[n-1] == '\n' && b[n-2] == '\n' {
+				return
+			}
+			result.WriteByte('\n')
+			return
+		}
+		result.WriteRune(r)
+	}
+
+	writeString := func(s string) {
+		for _, r := range s {
+			writeRune(r)
+		}
+	}
+
+	checkY := func(y float64) {
+		if !hasLastY {
+			lastY = y
+			hasLastY = true
+			return
+		}
+		diff := math.Abs(y - lastY)
+		if diff > 2.0 {
+			writeRune('\n')
+			lastY = y
+		} else {
+			b := result.Bytes()
+			n := len(b)
+			if n > 0 && b[n-1] != ' ' && b[n-1] != '\n' {
+				writeRune(' ')
+			}
+		}
+	}
+
 	l := NewLexer(content)
 	for {
 		tok, err := l.NextToken()
@@ -395,9 +454,9 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 			op := tok.val
 			switch op {
 			case "BT":
+				ty = 0.0
 				stack = nil
 			case "ET":
-				result.WriteByte('\n')
 				stack = nil
 			case "Tf":
 				if len(stack) >= 2 {
@@ -417,32 +476,62 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 						}
 						currentFont = f
 					}
+					if size, ok := AsFloat(stack[len(stack)-1]); ok {
+						leading = size
+					}
 				}
+				stack = nil
+			case "Td":
+				if len(stack) >= 2 {
+					if yVal, ok := AsFloat(stack[len(stack)-1]); ok {
+						ty += yVal
+					}
+				}
+				stack = nil
+			case "TD":
+				if len(stack) >= 2 {
+					if yVal, ok := AsFloat(stack[len(stack)-1]); ok {
+						leading = -yVal
+						ty += yVal
+					}
+				}
+				stack = nil
+			case "Tm":
+				if len(stack) >= 6 {
+					if yVal, ok := AsFloat(stack[len(stack)-1]); ok {
+						ty = yVal
+					}
+				}
+				stack = nil
+			case "T*":
+				ty -= leading
 				stack = nil
 			case "Tj":
 				if len(stack) >= 1 {
 					if strObj, ok := AsString(stack[len(stack)-1]); ok {
+						checkY(ty)
 						text := strObj
 						if currentFont != nil {
 							text = currentFont.DecodeString(strObj)
 						}
-						result.WriteString(text)
+						writeString(text)
 					}
 				}
 				stack = nil
 			case "TJ":
 				if len(stack) >= 1 {
 					if arr, ok := AsArray(stack[len(stack)-1]); ok {
+						checkY(ty)
 						for _, item := range arr {
 							if strObj, ok := AsString(item); ok {
 								text := strObj
 								if currentFont != nil {
 									text = currentFont.DecodeString(strObj)
 								}
-								result.WriteString(text)
+								writeString(text)
 							} else if num, ok := AsFloat(item); ok {
 								if num <= -100 {
-									result.WriteByte(' ')
+									writeRune(' ')
 								}
 							}
 						}
@@ -450,26 +539,28 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 				}
 				stack = nil
 			case "'":
-				result.WriteByte('\n')
+				ty -= leading
 				if len(stack) >= 1 {
 					if strObj, ok := AsString(stack[len(stack)-1]); ok {
+						checkY(ty)
 						text := strObj
 						if currentFont != nil {
 							text = currentFont.DecodeString(strObj)
 						}
-						result.WriteString(text)
+						writeString(text)
 					}
 				}
 				stack = nil
 			case "\"":
-				result.WriteByte('\n')
+				ty -= leading
 				if len(stack) >= 1 {
 					if strObj, ok := AsString(stack[len(stack)-1]); ok {
+						checkY(ty)
 						text := strObj
 						if currentFont != nil {
 							text = currentFont.DecodeString(strObj)
 						}
-						result.WriteString(text)
+						writeString(text)
 					}
 				}
 				stack = nil
@@ -478,7 +569,11 @@ func (d *Document) parseContentStream(content []byte, pageDict Dictionary) (stri
 			}
 		}
 	}
-	return result.String(), nil
+	res := result.String()
+	if len(res) > 0 && res[len(res)-1] != '\n' {
+		res += "\n"
+	}
+	return res, nil
 }
 
 func parseContentArray(l *Lexer) (Array, error) {
