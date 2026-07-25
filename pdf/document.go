@@ -5,15 +5,19 @@ import (
 	"io"
 	"os"
 	"strconv"
+
+	"github.com/HritikR/gopdfx/crypto"
 )
 
 type Document struct {
-	input       []byte
-	lexer       *Lexer
-	parser      *Parser
-	xrefTable   map[int64]XrefEntry
-	trailer     Dictionary
-	objectCache map[int64]Object
+	input         []byte
+	lexer         *Lexer
+	parser        *Parser
+	xrefTable     map[int64]XrefEntry
+	trailer       Dictionary
+	objectCache   map[int64]Object
+	Encryption    *crypto.EncryptContext
+	encryptObjNum int64
 }
 
 // Open reads a PDF file from a path and returns a parsed Document.
@@ -58,6 +62,67 @@ func OpenBytes(data []byte) (*Document, error) {
 	err = doc.loadXrefAndTrailer(offset)
 	if err != nil {
 		return nil, err
+	}
+
+	// 3. Initialize encryption context if /Encrypt exists in trailer
+	if encryptObj, ok := doc.trailer[Name("Encrypt")]; ok {
+		ref, ok := AsRef(encryptObj)
+		if !ok {
+			return nil, fmt.Errorf("invalid /Encrypt in trailer")
+		}
+		doc.encryptObjNum = ref.ObjectNumber
+
+		entry, ok := doc.xrefTable[ref.ObjectNumber]
+		if !ok {
+			return nil, fmt.Errorf("/Encrypt object not found in xref table")
+		}
+
+		encParseObj, err := doc.parser.ParseAt(entry.Offset)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse /Encrypt object: %v", err)
+		}
+
+		iobj, ok := AsIndirectObj(encParseObj)
+		if !ok {
+			return nil, fmt.Errorf("expected indirect object for /Encrypt, got %T", encParseObj)
+		}
+
+		encDict, ok := AsDict(iobj.Value)
+		if !ok {
+			return nil, fmt.Errorf("expected /Encrypt value to be Dictionary, got %T", iobj.Value)
+		}
+
+		vVal := getIntParam(encDict, "V", 0)
+		rVal := getIntParam(encDict, "R", 0)
+		pVal := int64(0)
+		if pObj, ok := encDict[Name("P")]; ok {
+			if pInt, ok := AsInt(pObj); ok {
+				pVal = pInt
+			}
+		}
+		lengthVal := getIntParam(encDict, "Length", 40)
+
+		oVal, _ := AsString(encDict[Name("O")])
+		uVal, _ := AsString(encDict[Name("U")])
+
+		encryptMetadata := true
+		if emObj, ok := encDict[Name("EncryptMetadata")]; ok {
+			if emBool, ok := AsBool(emObj); ok {
+				encryptMetadata = emBool
+			}
+		}
+
+		var fileID []byte
+		if idObj, ok := doc.trailer[Name("ID")]; ok {
+			if idArr, ok := AsArray(idObj); ok && len(idArr) > 0 {
+				idStr, _ := AsString(idArr[0])
+				fileID = []byte(idStr)
+			}
+		}
+
+		doc.Encryption = crypto.NewEncryptContext(
+			vVal, rVal, []byte(oVal), []byte(uVal), pVal, lengthVal, encryptMetadata, fileID,
+		)
 	}
 
 	return doc, nil
@@ -187,8 +252,17 @@ func (d *Document) Resolve(ref IndirectRef) (Object, error) {
 			return nil, fmt.Errorf("object number mismatch: expected %d, got %d", ref.ObjectNumber, iobj.ObjectNumber)
 		}
 
-		d.objectCache[ref.ObjectNumber] = iobj.Value
-		return iobj.Value, nil
+		var val Object = iobj.Value
+		if ref.ObjectNumber != d.encryptObjNum {
+			decrypted, err := d.decrypt(val, ref.ObjectNumber, ref.GenerationNumber)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decrypt object %d: %v", ref.ObjectNumber, err)
+			}
+			val = decrypted
+		}
+
+		d.objectCache[ref.ObjectNumber] = val
+		return val, nil
 
 	case XrefEntryCompressed:
 		// Resolve the object stream containing this object
@@ -304,4 +378,84 @@ func (d *Document) Catalog() (Dictionary, error) {
 	}
 
 	return catDict, nil
+}
+
+// Unlock unlocks the encrypted document with the given password.
+func (d *Document) Unlock(password string) error {
+	if d.Encryption == nil {
+		return nil
+	}
+
+	masterKey, ok := crypto.VerifyUserPassword(
+		password, d.Encryption.O, d.Encryption.U, d.Encryption.P,
+		d.Encryption.Length, d.Encryption.R, d.Encryption.FileID, d.Encryption.EncryptMetadata,
+	)
+	if ok {
+		d.Encryption.SetUnlocked(masterKey)
+		return nil
+	}
+
+	masterKey, ok = crypto.VerifyOwnerPassword(
+		password, d.Encryption.O, d.Encryption.U, d.Encryption.P,
+		d.Encryption.Length, d.Encryption.R, d.Encryption.FileID, d.Encryption.EncryptMetadata,
+	)
+	if ok {
+		d.Encryption.SetUnlocked(masterKey)
+		return nil
+	}
+
+	return ErrWrongPassword
+}
+
+func (d *Document) decrypt(obj Object, objNum, genNum int64) (Object, error) {
+	if d.Encryption == nil || !d.Encryption.IsUnlocked() {
+		return obj, nil
+	}
+
+	switch v := obj.(type) {
+	case StringObj:
+		decrypted, err := d.Encryption.DecryptBytes([]byte(v.Value), objNum, genNum)
+		if err != nil {
+			return nil, err
+		}
+		return StringObj{Value: string(decrypted), Hex: v.Hex}, nil
+
+	case *Stream:
+		decrypted, err := d.Encryption.DecryptBytes(v.Data, objNum, genNum)
+		if err != nil {
+			return nil, err
+		}
+		v.Data = decrypted
+
+		decDict, err := d.decrypt(v.Dict, objNum, genNum)
+		if err != nil {
+			return nil, err
+		}
+		v.Dict = decDict.(Dictionary)
+		return v, nil
+
+	case Dictionary:
+		decryptedDict := make(Dictionary)
+		for k, val := range v {
+			decVal, err := d.decrypt(val, objNum, genNum)
+			if err != nil {
+				return nil, err
+			}
+			decryptedDict[k] = decVal
+		}
+		return decryptedDict, nil
+
+	case Array:
+		decryptedArray := make(Array, len(v))
+		for i, val := range v {
+			decVal, err := d.decrypt(val, objNum, genNum)
+			if err != nil {
+				return nil, err
+			}
+			decryptedArray[i] = decVal
+		}
+		return decryptedArray, nil
+	}
+
+	return obj, nil
 }
