@@ -18,6 +18,7 @@ type Document struct {
 	objectCache   map[int64]Object
 	Encryption    *crypto.EncryptContext
 	encryptObjNum int64
+	pageRefs      []IndirectRef
 }
 
 // Open reads a PDF file from a path and returns a parsed Document.

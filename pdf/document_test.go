@@ -84,12 +84,12 @@ func TestDocument_ObjectStreamResolve(t *testing.T) {
 	// obj 4: Compressed (objStm 3, idx 0) -> [0x02, 0x00, 0x03, 0x00]
 	// obj 5: Compressed (objStm 3, idx 1) -> [0x02, 0x00, 0x03, 0x01]
 	// obj 6: Normal (Xref Stream offset) -> we can resolve offset6
-	
+
 	// Let's write the xref stream data
 	// Length of obj3 is len(obj3) = 111 bytes.
 	// Offset of obj6 (Xref Stream) = offset3 + len(obj3) = 9 + 111 = 120.
 	offset6 := offset3 + len(obj3)
-	
+
 	xrefStreamHeader := "6 0 obj\n<< /Type /XRef /Size 7 /W [1 2 1] /Length 28 /Root 3 0 R >>\nstream\n"
 	xrefStreamData := []byte{
 		0x00, 0x00, 0x00, 0x00, // 0 free
@@ -101,11 +101,11 @@ func TestDocument_ObjectStreamResolve(t *testing.T) {
 		0x01, 0x00, byte(offset6), 0x00, // 6 normal
 	}
 	xrefStreamTrailer := "\nendstream\nendobj\n"
-	
+
 	startxrefOffset := offset6 + len(xrefStreamHeader) + len(xrefStreamData) + len(xrefStreamTrailer)
-	
+
 	startxrefSection := fmt.Sprintf("startxref\n%d\n%%EOF", offset6)
-	
+
 	var pdfBytes []byte
 	pdfBytes = append(pdfBytes, []byte(header)...)
 	pdfBytes = append(pdfBytes, []byte(obj3)...)
@@ -113,7 +113,7 @@ func TestDocument_ObjectStreamResolve(t *testing.T) {
 	pdfBytes = append(pdfBytes, xrefStreamData...)
 	pdfBytes = append(pdfBytes, []byte(xrefStreamTrailer)...)
 	pdfBytes = append(pdfBytes, []byte(startxrefSection)...)
-	
+
 	_ = startxrefOffset // used implicitly
 
 	doc, err := OpenBytes(pdfBytes)
@@ -155,14 +155,14 @@ func TestDocument_IncrementalUpdate(t *testing.T) {
 
 	xref1 := fmt.Sprintf("xref\n0 3\n0000000000 65535 f \n%010d 00000 n \n%010d 00000 n \n", offset1, offset2Original)
 	offsetXref1 := len(header) + len(obj1) + len(obj2Original)
-	trailer1 := fmt.Sprintf("trailer\n<< /Size 3 /Root 1 0 R >>\n")
-	
+	trailer1 := fmt.Sprint("trailer\n<< /Size 3 /Root 1 0 R >>\n")
+
 	// incremental update starts here
 	offsetIncremental := offsetXref1 + len(xref1) + len(trailer1)
 	obj2Updated := "2 0 obj\n<< /Type /Pages /Count 5 >>\nendobj\n"
-	
+
 	offset2Updated := offsetIncremental
-	
+
 	xref2 := fmt.Sprintf("xref\n2 1\n%010d 00000 n \n", offset2Updated)
 	offsetXref2 := offsetIncremental + len(obj2Updated)
 	trailer2 := fmt.Sprintf("trailer\n<< /Size 3 /Root 1 0 R /Prev %d >>\nstartxref\n%d\n%%EOF", offsetXref1, offsetXref2)
