@@ -141,7 +141,7 @@ func main() {
 			htmlFile.WriteString("  <tr>\n")
 			for _, el := range r.elements {
 				escaped := html.EscapeString(el.Text)
-				fmt.Fprintf(htmlFile, "    <td>%s (x: %.2f, y: %.2f)</td>\n", escaped, el.X, el.Y)
+				fmt.Fprintf(htmlFile, "    <td>%s <span style=\"font-size: 12px; color: grey;\">(x: %.2f, y: %.2f)</span></td>\n", escaped, el.X, el.Y)
 			}
 			htmlFile.WriteString("  </tr>\n")
 		}
