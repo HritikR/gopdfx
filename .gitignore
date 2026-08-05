@@ -3,3 +3,4 @@ project
 docs
 output
 *.md
+env.sh
