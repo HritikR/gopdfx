@@ -29,22 +29,27 @@ type CMapRange struct {
 }
 
 type Font struct {
-	Name    Name
-	Subtype Name
-	CMap    *CMap
+	Name     Name // PDF resource name, e.g. F1
+	BaseFont Name // Embedded font name, e.g. ABCDEE+Calibri
+	Subtype  Name
+	CMap     *CMap
 }
 
 type TextElement struct {
-	X    float64
-	Y    float64
-	Text string
+	X        float64
+	Y        float64
+	Text     string
+	FontName string
+	FontSize float64
 }
 
 type textElement struct {
-	x    float64
-	y    float64
-	text string
-	idx  int
+	x        float64
+	y        float64
+	text     string
+	idx      int
+	font     *Font
+	fontSize float64
 }
 
 func (c *CMap) Lookup(code uint32) (string, bool) {
@@ -92,6 +97,18 @@ func decodeUTF16BEBytes(b []byte) string {
 		runes = append(runes, (uint16(b[i])<<8)|uint16(b[i+1]))
 	}
 	return string(utf16.Decode(runes))
+}
+
+func cleanFontName(name Name) string {
+	s := string(name)
+
+	// Embedded subset fonts commonly use a six-character prefix:
+	// ABCDEF+Calibri-Bold
+	if i := strings.IndexByte(s, '+'); i >= 0 {
+		s = s[i+1:]
+	}
+
+	return s
 }
 
 func ParseCMap(data []byte) (*CMap, error) {
@@ -285,18 +302,32 @@ func (d *Document) collectPages(ref IndirectRef, pages *[]IndirectRef) error {
 	return nil
 }
 
+func (d *Document) resolveObject(obj Object) (Object, error) {
+	if ref, ok := AsRef(obj); ok {
+		return d.Resolve(ref)
+	}
+	return obj, nil
+}
+
 func (d *Document) getPageResource(pageDict Dictionary, resourceType Name, resourceName Name) (Object, error) {
 	curr := pageDict
+	visited := make(map[IndirectRef]struct{})
+
 	for {
 		if resObj, ok := curr[Name("Resources")]; ok {
-			if resDict, ok := AsDict(resObj); ok {
+			resolved, err := d.resolveObject(resObj)
+			if err != nil {
+				return nil, fmt.Errorf("resolve /Resources: %w", err)
+			}
+			if resDict, ok := AsDict(resolved); ok {
 				if typeObj, ok := resDict[resourceType]; ok {
-					if typeDict, ok := AsDict(typeObj); ok {
+					resolvedType, err := d.resolveObject(typeObj)
+					if err != nil {
+						return nil, fmt.Errorf("resolve /%s resources: %w", resourceType, err)
+					}
+					if typeDict, ok := AsDict(resolvedType); ok {
 						if val, ok := typeDict[resourceName]; ok {
-							if ref, ok := AsRef(val); ok {
-								return d.Resolve(ref)
-							}
-							return val, nil
+							return d.resolveObject(val)
 						}
 					}
 				}
@@ -309,24 +340,28 @@ func (d *Document) getPageResource(pageDict Dictionary, resourceType Name, resou
 		}
 		parentRef, ok := AsRef(parentRefObj)
 		if !ok {
-			break
+			return nil, fmt.Errorf("invalid /Parent reference")
 		}
+		if _, seen := visited[parentRef]; seen {
+			return nil, fmt.Errorf("cycle in page parent chain at object %d", parentRef.ObjectNumber)
+		}
+		visited[parentRef] = struct{}{}
+
 		parentObj, err := d.Resolve(parentRef)
-		if err != nil || parentObj == nil {
-			break
+		if err != nil {
+			return nil, fmt.Errorf("resolve page parent %d: %w", parentRef.ObjectNumber, err)
 		}
-		curr, ok = AsDict(parentObj)
-		if !ok {
-			break
+		var okDict bool
+		curr, okDict = AsDict(parentObj)
+		if !okDict {
+			return nil, fmt.Errorf("page parent %d is not a dictionary", parentRef.ObjectNumber)
 		}
 	}
 	return nil, fmt.Errorf("resource /%s /%s not found", resourceType, resourceName)
 }
 
 func (d *Document) loadFont(fontName Name, fontDict Dictionary) (*Font, error) {
-	f := &Font{
-		Name: fontName,
-	}
+	f := &Font{Name: fontName}
 
 	if subtypeObj, ok := fontDict[Name("Subtype")]; ok {
 		if subtype, ok := AsName(subtypeObj); ok {
@@ -334,23 +369,32 @@ func (d *Document) loadFont(fontName Name, fontDict Dictionary) (*Font, error) {
 		}
 	}
 
-	if toUnicodeObj, ok := fontDict[Name("ToUnicode")]; ok {
-		ref, ok := AsRef(toUnicodeObj)
-		if ok {
-			unicodeObj, err := d.Resolve(ref)
-			if err == nil {
-				stream, ok := AsStream(unicodeObj)
-				if ok {
-					decodedData, err := stream.Decode()
-					if err == nil {
-						cmap, err := ParseCMap(decodedData)
-						if err == nil {
-							f.CMap = cmap
-						}
-					}
-				}
-			}
+	if baseFontObj, ok := fontDict[Name("BaseFont")]; ok {
+		if baseFont, ok := AsName(baseFontObj); ok {
+			f.BaseFont = Name(baseFont)
 		}
+	}
+
+	toUnicodeObj, ok := fontDict[Name("ToUnicode")]
+	if !ok {
+		return f, nil
+	}
+
+	resolved, err := d.resolveObject(toUnicodeObj)
+	if err != nil {
+		return nil, fmt.Errorf("resolve ToUnicode for font /%s: %w", fontName, err)
+	}
+	stream, ok := AsStream(resolved)
+	if !ok {
+		return nil, fmt.Errorf("ToUnicode for font /%s is not a stream", fontName)
+	}
+	decodedData, err := stream.Decode()
+	if err != nil {
+		return nil, fmt.Errorf("decode ToUnicode for font /%s: %w", fontName, err)
+	}
+	f.CMap, err = ParseCMap(decodedData)
+	if err != nil {
+		return nil, fmt.Errorf("parse ToUnicode for font /%s: %w", fontName, err)
 	}
 	return f, nil
 }
@@ -370,6 +414,7 @@ func (d *Document) readStreamData(ref IndirectRef) ([]byte, error) {
 func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]TextElement, error) {
 	resolvedFonts := make(map[Name]*Font)
 	var currentFont *Font
+	var currentFontSize float64
 	var stack []Object
 	var elements []textElement
 	elementCount := 0
@@ -425,24 +470,43 @@ func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]T
 				if len(stack) >= 2 {
 					if fontNameStr, ok := AsName(stack[len(stack)-2]); ok {
 						fontName := Name(fontNameStr)
-						f, ok := resolvedFonts[fontName]
-						if !ok {
-							fontRes, err := d.getPageResource(pageDict, Name("Font"), fontName)
-							if err == nil {
-								if fontDict, ok := AsDict(fontRes); ok {
-									f, _ = d.loadFont(fontName, fontDict)
-								}
+
+						f, found := resolvedFonts[fontName]
+						if !found {
+							fontRes, err := d.getPageResource(
+								pageDict,
+								Name("Font"),
+								fontName,
+							)
+							if err != nil {
+								return nil, err
 							}
-							if f != nil {
-								resolvedFonts[fontName] = f
+
+							fontDict, ok := AsDict(fontRes)
+							if !ok {
+								return nil, fmt.Errorf(
+									"font resource /%s is %T, expected dictionary",
+									fontName,
+									fontRes,
+								)
 							}
+
+							f, err = d.loadFont(fontName, fontDict)
+							if err != nil {
+								return nil, err
+							}
+
+							resolvedFonts[fontName] = f
 						}
+
 						currentFont = f
 					}
+
 					if size, ok := AsFloat(stack[len(stack)-1]); ok {
-						leading = size
+						currentFontSize = size
 					}
 				}
+
 				stack = nil
 			case "Td":
 				if len(stack) >= 2 {
@@ -480,10 +544,12 @@ func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]T
 							text = currentFont.DecodeString(strObj)
 						}
 						elements = append(elements, textElement{
-							x:    tx,
-							y:    ty,
-							text: text,
-							idx:  elementCount,
+							x:        tx,
+							y:        ty,
+							text:     text,
+							idx:      elementCount,
+							font:     currentFont,
+							fontSize: currentFontSize,
 						})
 						elementCount++
 					}
@@ -507,10 +573,12 @@ func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]T
 							}
 						}
 						elements = append(elements, textElement{
-							x:    tx,
-							y:    ty,
-							text: sb.String(),
-							idx:  elementCount,
+							x:        tx,
+							y:        ty,
+							text:     sb.String(),
+							idx:      elementCount,
+							font:     currentFont,
+							fontSize: currentFontSize,
 						})
 						elementCount++
 					}
@@ -525,10 +593,12 @@ func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]T
 							text = currentFont.DecodeString(strObj)
 						}
 						elements = append(elements, textElement{
-							x:    tx,
-							y:    ty,
-							text: text,
-							idx:  elementCount,
+							x:        tx,
+							y:        ty,
+							text:     text,
+							idx:      elementCount,
+							font:     currentFont,
+							fontSize: currentFontSize,
 						})
 						elementCount++
 					}
@@ -543,10 +613,12 @@ func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]T
 							text = currentFont.DecodeString(strObj)
 						}
 						elements = append(elements, textElement{
-							x:    tx,
-							y:    ty,
-							text: text,
-							idx:  elementCount,
+							x:        tx,
+							y:        ty,
+							text:     text,
+							idx:      elementCount,
+							font:     currentFont,
+							fontSize: currentFontSize,
 						})
 						elementCount++
 					}
@@ -598,11 +670,23 @@ func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]T
 		})
 
 		for _, el := range r.elements {
-			sortedElements = append(sortedElements, TextElement{
-				X:    el.x,
-				Y:    el.y,
-				Text: el.text,
-			})
+			result := TextElement{
+				X:        el.x,
+				Y:        el.y,
+				Text:     el.text,
+				FontSize: el.fontSize,
+			}
+
+			if el.font != nil {
+				result.FontName = cleanFontName(el.font.BaseFont)
+
+				// Some unusual fonts may not contain /BaseFont.
+				if result.FontName == "" {
+					result.FontName = string(el.font.Name)
+				}
+			}
+
+			sortedElements = append(sortedElements, result)
 		}
 	}
 
@@ -806,74 +890,60 @@ func (d *Document) Text() (string, error) {
 	return buf.String(), nil
 }
 
-func (p *Page) Text() (string, error) {
-	contentsObj, ok := p.Dict[Name("Contents")]
-	if !ok {
-		return "", nil
-	}
-
-	var contentBytes []byte
-
-	if ref, ok := AsRef(contentsObj); ok {
-		data, err := p.doc.readStreamData(ref)
-		if err != nil {
-			return "", err
-		}
-		contentBytes = data
-	} else if arr, ok := AsArray(contentsObj); ok {
-		var buf bytes.Buffer
-		for _, refObj := range arr {
-			ref, ok := AsRef(refObj)
-			if !ok {
-				continue
-			}
-			data, err := p.doc.readStreamData(ref)
-			if err != nil {
-				return "", err
-			}
-			buf.Write(data)
-			buf.WriteByte(' ')
-		}
-		contentBytes = buf.Bytes()
-	} else {
-		return "", fmt.Errorf("invalid Contents type: %T", contentsObj)
-	}
-
-	return p.doc.parseContentStream(contentBytes, p.Dict)
-}
-
-func (p *Page) TextElements() ([]TextElement, error) {
+func (p *Page) contentBytes() ([]byte, error) {
 	contentsObj, ok := p.Dict[Name("Contents")]
 	if !ok {
 		return nil, nil
 	}
 
-	var contentBytes []byte
-
-	if ref, ok := AsRef(contentsObj); ok {
-		data, err := p.doc.readStreamData(ref)
+	readOne := func(obj Object) ([]byte, error) {
+		resolved, err := p.doc.resolveObject(obj)
 		if err != nil {
 			return nil, err
 		}
-		contentBytes = data
-	} else if arr, ok := AsArray(contentsObj); ok {
-		var buf bytes.Buffer
-		for _, refObj := range arr {
-			ref, ok := AsRef(refObj)
-			if !ok {
-				continue
-			}
-			data, err := p.doc.readStreamData(ref)
-			if err != nil {
-				return nil, err
-			}
-			buf.Write(data)
-			buf.WriteByte(' ')
+		stream, ok := AsStream(resolved)
+		if !ok {
+			return nil, fmt.Errorf("expected content stream, got %T", resolved)
 		}
-		contentBytes = buf.Bytes()
-	} else {
-		return nil, fmt.Errorf("invalid Contents type: %T", contentsObj)
+		return stream.Decode()
 	}
 
-	return p.doc.extractTextElements(contentBytes, p.Dict)
+	if arr, ok := AsArray(contentsObj); ok {
+		var buf bytes.Buffer
+		for i, item := range arr {
+			data, err := readOne(item)
+			if err != nil {
+				return nil, fmt.Errorf("decode content stream %d: %w", i, err)
+			}
+			if buf.Len() > 0 {
+				buf.WriteByte(' ')
+			}
+			buf.Write(data)
+		}
+		return buf.Bytes(), nil
+	}
+
+	return readOne(contentsObj)
+}
+
+func (p *Page) Text() (string, error) {
+	content, err := p.contentBytes()
+	if err != nil {
+		return "", err
+	}
+	if len(content) == 0 {
+		return "", nil
+	}
+	return p.doc.parseContentStream(content, p.Dict)
+}
+
+func (p *Page) TextElements() ([]TextElement, error) {
+	content, err := p.contentBytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(content) == 0 {
+		return nil, nil
+	}
+	return p.doc.extractTextElements(content, p.Dict)
 }
