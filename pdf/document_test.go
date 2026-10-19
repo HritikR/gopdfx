@@ -2,6 +2,7 @@ package pdf
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,17 @@ func TestDocument_ClassicResolve(t *testing.T) {
 	}
 	if bVal, ok := AsBool(cachedObj); !ok || !bVal {
 		t.Errorf("Expected cached boolean value, got %v", cachedObj)
+	}
+}
+
+func TestDocument_XrefPrevCycle(t *testing.T) {
+	doc := &Document{input: []byte{0}}
+	err := doc.loadXrefAndTrailerVisited(0, map[int64]struct{}{0: {}})
+	if err == nil {
+		t.Fatal("expected an error for a cyclic xref /Prev chain")
+	}
+	if !strings.Contains(err.Error(), "cycle detected") {
+		t.Fatalf("expected cycle error, got %v", err)
 	}
 }
 

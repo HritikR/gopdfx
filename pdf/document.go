@@ -130,6 +130,18 @@ func OpenBytes(data []byte) (*Document, error) {
 }
 
 func (d *Document) loadXrefAndTrailer(offset int64) error {
+	return d.loadXrefAndTrailerVisited(offset, make(map[int64]struct{}))
+}
+
+func (d *Document) loadXrefAndTrailerVisited(offset int64, visited map[int64]struct{}) error {
+	if offset < 0 || offset >= int64(len(d.input)) {
+		return fmt.Errorf("xref offset %d is outside the input", offset)
+	}
+	if _, seen := visited[offset]; seen {
+		return fmt.Errorf("cycle detected in xref /Prev chain at offset %d", offset)
+	}
+	visited[offset] = struct{}{}
+
 	subLexer := NewLexer(d.input)
 	subLexer.SetPos(int(offset))
 	p := NewParser(subLexer)
@@ -215,7 +227,7 @@ func (d *Document) loadXrefAndTrailer(offset int64) error {
 	// Handle incremental updates by recursively parsing Prev offset
 	if prevObj, ok := currentTrailer[Name("Prev")]; ok {
 		if prevOffset, ok := AsInt(prevObj); ok && prevOffset > 0 {
-			return d.loadXrefAndTrailer(prevOffset)
+			return d.loadXrefAndTrailerVisited(prevOffset, visited)
 		}
 	}
 
