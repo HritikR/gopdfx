@@ -85,7 +85,7 @@ func TestParseXrefStream(t *testing.T) {
 	// Entry 0 (obj 0): free, next free obj = 0, gen = 65535 -> bytes: [0x00, 0x00, 0x00, 0xFF, 0xFF] (wait, gen width is 1 so 65535 fits modulo 256 -> 0xFF)
 	// Entry 1 (obj 1): normal, offset = 120 (0x0078), gen = 0 -> bytes: [0x01, 0x00, 0x78, 0x00]
 	// Entry 2 (obj 10): compressed, stream obj = 2 (0x0002), index = 5 (0x05) -> bytes: [0x02, 0x00, 0x02, 0x05]
-	
+
 	streamDict := Dictionary{
 		Name("Type"):  Name("XRef"),
 		Name("Size"):  Integer(11),

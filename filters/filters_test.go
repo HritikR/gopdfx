@@ -47,7 +47,7 @@ func TestDecodeASCII85(t *testing.T) {
 		{"<~z~>", "\x00\x00\x00\x00", false},
 		{"<~9jqo^~>", "Man ", false}, // padded block
 		{"<~9jqo^", "Man ", false},   // missing ~> is handled gracefully
-		{"<~!", "", true},             // truncated 1 char
+		{"<~!", "", true},            // truncated 1 char
 	}
 
 	for i, tc := range tests {

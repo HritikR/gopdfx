@@ -79,33 +79,33 @@ func TestText_FullExtractionIntegration(t *testing.T) {
 	// - Obj 3 (Page Leaf) -> /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >>
 	// - Obj 4 (Contents Stream) -> "BT /F1 12 Tf (Parsed PDF Text) Tj ET"
 	// - Obj 5 (Font Dict) -> /Type /Font /Subtype /Type1
-	
+
 	header := "%PDF-1.4\n"
 	obj1 := "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
 	obj2 := "2 0 obj\n<< /Type /Pages /Kids [ 3 0 R ] /Count 1 >>\nendobj\n"
 	obj3 := "3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
-	
+
 	contentStream := "BT /F1 10 Tf (Parsed PDF Text) Tj ET"
 	obj4 := fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(contentStream), contentStream)
 	obj5 := "5 0 obj\n<< /Type /Font /Subtype /Type1 >>\nendobj\n"
-	
+
 	offset1 := len(header)
 	offset2 := offset1 + len(obj1)
 	offset3 := offset2 + len(obj2)
 	offset4 := offset3 + len(obj3)
 	offset5 := offset4 + len(obj4)
 	offsetXref := offset5 + len(obj5)
-	
+
 	xrefTable := fmt.Sprintf("xref\n0 6\n0000000000 65535 f \n%010d 00000 n \n%010d 00000 n \n%010d 00000 n \n%010d 00000 n \n%010d 00000 n \n", offset1, offset2, offset3, offset4, offset5)
 	trailer := fmt.Sprintf("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%EOF", offsetXref)
-	
+
 	pdfBytes := []byte(header + obj1 + obj2 + obj3 + obj4 + obj5 + xrefTable + trailer)
-	
+
 	doc, err := OpenBytes(pdfBytes)
 	if err != nil {
 		t.Fatalf("OpenBytes failed: %v", err)
 	}
-	
+
 	numPages, err := doc.NumPages()
 	if err != nil {
 		t.Fatalf("NumPages failed: %v", err)
@@ -113,12 +113,12 @@ func TestText_FullExtractionIntegration(t *testing.T) {
 	if numPages != 1 {
 		t.Fatalf("Expected 1 page, got %d", numPages)
 	}
-	
+
 	text, err := doc.Text()
 	if err != nil {
 		t.Fatalf("Text failed: %v", err)
 	}
-	
+
 	expectedText := "Parsed PDF Text\n"
 	if text != expectedText {
 		t.Errorf("Expected extracted text %q, got %q", expectedText, text)
@@ -132,38 +132,38 @@ func TestText_InheritedResources(t *testing.T) {
 	// - Obj 3 (Page Leaf) -> /Parent 2 0 R /Contents 4 0 R (No /Resources dictionary here!)
 	// - Obj 4 (Contents Stream) -> "BT /F1 10 Tf (Inherited Text) Tj ET"
 	// - Obj 5 (Font Dict) -> /Type /Font /Subtype /Type1
-	
+
 	header := "%PDF-1.4\n"
 	obj1 := "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
 	obj2 := "2 0 obj\n<< /Type /Pages /Kids [ 3 0 R ] /Count 1 /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
 	obj3 := "3 0 obj\n<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>\nendobj\n"
-	
+
 	contentStream := "BT /F1 10 Tf (Inherited Text) Tj ET"
 	obj4 := fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(contentStream), contentStream)
 	obj5 := "5 0 obj\n<< /Type /Font /Subtype /Type1 >>\nendobj\n"
-	
+
 	offset1 := len(header)
 	offset2 := offset1 + len(obj1)
 	offset3 := offset2 + len(obj2)
 	offset4 := offset3 + len(obj3)
 	offset5 := offset4 + len(obj4)
 	offsetXref := offset5 + len(obj5)
-	
+
 	xrefTable := fmt.Sprintf("xref\n0 6\n0000000000 65535 f \n%010d 00000 n \n%010d 00000 n \n%010d 00000 n \n%010d 00000 n \n%010d 00000 n \n", offset1, offset2, offset3, offset4, offset5)
 	trailer := fmt.Sprintf("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n%d\n%%EOF", offsetXref)
-	
+
 	pdfBytes := []byte(header + obj1 + obj2 + obj3 + obj4 + obj5 + xrefTable + trailer)
-	
+
 	doc, err := OpenBytes(pdfBytes)
 	if err != nil {
 		t.Fatalf("OpenBytes failed: %v", err)
 	}
-	
+
 	text, err := doc.Text()
 	if err != nil {
 		t.Fatalf("Text failed: %v", err)
 	}
-	
+
 	expectedText := "Inherited Text\n"
 	if text != expectedText {
 		t.Errorf("Expected extracted text %q, got %q", expectedText, text)

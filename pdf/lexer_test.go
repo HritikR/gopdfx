@@ -99,7 +99,7 @@ func TestLexer_LiteralStrings(t *testing.T) {
 		{"(Hello, World!)", "Hello, World!"},
 		{"(Hello \\(nested\\) World)", "Hello (nested) World"},
 		{"(Line 1\\nLine 2\\rTab\\tBack\\bFF\\fSlash\\\\)", "Line 1\nLine 2\rTab\tBack\bFF\fSlash\\"},
-		{"(Octal \\101 \\123)", "Octal A S"}, // \101 is 'A', \123 is 'S'
+		{"(Octal \\101 \\123)", "Octal A S"},            // \101 is 'A', \123 is 'S'
 		{"(OctalShort \\1 \\12)", "OctalShort \x01 \n"}, // \1 is 0x01, \12 is 0x0a ('\n')
 		{"(Line\\\nContinuation)", "LineContinuation"},
 		{"(Line\\\r\nContinuation)", "LineContinuation"},
