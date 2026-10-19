@@ -8,6 +8,11 @@
 <p align="center">Read PDF objects, extract text, inspect page graphics, and work with supported encrypted documents.</p>
 </p>
 
+## License
+
+This project is licensed under the Apache License, Version 2.0.
+See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
 ## Install
 
 Run this command:
