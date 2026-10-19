@@ -3,4 +3,5 @@ project
 docs
 output
 *.md
+!README.md
 env.sh
