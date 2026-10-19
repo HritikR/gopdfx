@@ -265,6 +265,16 @@ func (d *Document) initPageRefs() error {
 }
 
 func (d *Document) collectPages(ref IndirectRef, pages *[]IndirectRef) error {
+	return d.collectPagesVisited(ref, pages, make(map[IndirectRef]struct{}))
+}
+
+func (d *Document) collectPagesVisited(ref IndirectRef, pages *[]IndirectRef, active map[IndirectRef]struct{}) error {
+	if _, seen := active[ref]; seen {
+		return fmt.Errorf("cycle in page tree at object %d", ref.ObjectNumber)
+	}
+	active[ref] = struct{}{}
+	defer delete(active, ref)
+
 	obj, err := d.Resolve(ref)
 	if err != nil {
 		return err
@@ -289,7 +299,7 @@ func (d *Document) collectPages(ref IndirectRef, pages *[]IndirectRef) error {
 			if !ok {
 				return fmt.Errorf("invalid Kid reference in pages tree node %d", ref.ObjectNumber)
 			}
-			err = d.collectPages(kidRef, pages)
+			err = d.collectPagesVisited(kidRef, pages, active)
 			if err != nil {
 				return err
 			}

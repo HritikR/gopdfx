@@ -71,6 +71,27 @@ func TestDocument_XrefPrevCycle(t *testing.T) {
 	}
 }
 
+func TestDocument_PageTreeCycle(t *testing.T) {
+	ref := IndirectRef{ObjectNumber: 1, GenerationNumber: 0}
+	doc := &Document{
+		objectCache: map[int64]Object{
+			1: Dictionary{
+				Name("Type"): Name("Pages"),
+				Name("Kids"): Array{ref},
+			},
+		},
+	}
+
+	var pages []IndirectRef
+	err := doc.collectPages(ref, &pages)
+	if err == nil {
+		t.Fatal("expected an error for a cyclic page tree")
+	}
+	if !strings.Contains(err.Error(), "cycle in page tree") {
+		t.Fatalf("expected page-tree cycle error, got %v", err)
+	}
+}
+
 func TestDocument_ObjectStreamResolve(t *testing.T) {
 	// Construct a PDF containing an uncompressed Object Stream (obj 3)
 	// Object Stream contains:
