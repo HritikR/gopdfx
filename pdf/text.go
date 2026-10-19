@@ -473,30 +473,34 @@ func (d *Document) extractTextElements(content []byte, pageDict Dictionary) ([]T
 
 						f, found := resolvedFonts[fontName]
 						if !found {
-							fontRes, err := d.getPageResource(
-								pageDict,
-								Name("Font"),
-								fontName,
-							)
-							if err != nil {
-								return nil, err
-							}
-
-							fontDict, ok := AsDict(fontRes)
-							if !ok {
-								return nil, fmt.Errorf(
-									"font resource /%s is %T, expected dictionary",
+							// A content stream can still be useful when its font
+							// resource is unavailable. Keep currentFont nil so the
+							// text operators use their raw-byte fallback instead of
+							// failing the entire extraction.
+							if pageDict != nil {
+								fontRes, err := d.getPageResource(
+									pageDict,
+									Name("Font"),
 									fontName,
-									fontRes,
 								)
-							}
+								if err == nil {
+									fontDict, ok := AsDict(fontRes)
+									if !ok {
+										return nil, fmt.Errorf(
+											"font resource /%s is %T, expected dictionary",
+											fontName,
+											fontRes,
+										)
+									}
 
-							f, err = d.loadFont(fontName, fontDict)
-							if err != nil {
-								return nil, err
-							}
+									f, err = d.loadFont(fontName, fontDict)
+									if err != nil {
+										return nil, err
+									}
 
-							resolvedFonts[fontName] = f
+									resolvedFonts[fontName] = f
+								}
+							}
 						}
 
 						currentFont = f
