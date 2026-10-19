@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strconv"
@@ -221,14 +222,10 @@ func (p *Parser) parseStreamData(dict Dictionary) (*Stream, error) {
 
 	// Fallback scanning method to find "endstream"
 	input := p.lexer.input
-	pos := startPos
+	relativeEndstreamIdx := bytes.Index(input[startPos:], []byte("endstream"))
 	endstreamIdx := -1
-	for pos < len(input) {
-		if pos+9 <= len(input) && string(input[pos:pos+9]) == "endstream" {
-			endstreamIdx = pos
-			break
-		}
-		pos++
+	if relativeEndstreamIdx >= 0 {
+		endstreamIdx = startPos + relativeEndstreamIdx
 	}
 
 	if endstreamIdx == -1 {
