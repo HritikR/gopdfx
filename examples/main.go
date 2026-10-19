@@ -108,12 +108,32 @@ func exportPage(doc *pdf.Document, pageIndex int) error {
 		return fmt.Errorf("load page: %w", err)
 	}
 
-	elements, err := page.TextElementsWithCellBounds()
+	textElements, err := page.TextElements()
 	if err != nil {
 		return fmt.Errorf(
-			"extract text elements with cell bounds: %w",
+			"extract text elements: %w",
 			err,
 		)
+	}
+
+	elements := make([]pdf.BoundedTextElement, len(textElements))
+	for i, element := range textElements {
+		elements[i].TextElement = element
+	}
+
+	// Table detection is best-effort. Preserve extracted text when a page has
+	// no ruled table or its graphics contain operators this example cannot use.
+	lines, lineErr := page.LineElements()
+	if lineErr != nil {
+		fmt.Printf("Warning: page %d table detection unavailable: %v\n", pageIndex+1, lineErr)
+	} else {
+		lines = pdf.MergeLineElements(lines, geometryTolerance, 1.5)
+		for i := range elements {
+			if bounds, ok := pdf.FindCellBounds(elements[i].X, elements[i].Y, lines, geometryTolerance); ok {
+				cellBounds := bounds
+				elements[i].CellBounds = &cellBounds
+			}
+		}
 	}
 
 	textPath := fmt.Sprintf(
@@ -145,6 +165,7 @@ func exportPage(doc *pdf.Document, pageIndex int) error {
 		pageIndex+1,
 		rows,
 		columnBoundaries,
+		elements,
 	); err != nil {
 		return err
 	}
@@ -453,6 +474,7 @@ func writeHTML(
 	pageNumber int,
 	rows []tableRow,
 	columnBoundaries []float64,
+	elements []pdf.BoundedTextElement,
 ) error {
 	file, err := os.Create(path)
 	if err != nil {
@@ -521,6 +543,14 @@ tr:nth-child(even) {
   border: 1px solid #cbd5e1;
   background: #fff;
 }
+
+.raw-text {
+  padding: 12px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  white-space: pre-wrap;
+  font-family: monospace;
+}
 </style>
 </head>
 <body>
@@ -557,6 +587,10 @@ tr:nth-child(even) {
 				err,
 			)
 		}
+
+		if err := writeHTMLTextFallback(file, elements); err != nil {
+			return fmt.Errorf("write %s text fallback: %w", path, err)
+		}
 	} else if err := writeHTMLTable(
 		file,
 		rows,
@@ -591,6 +625,40 @@ tr:nth-child(even) {
 
 	closed = true
 	return nil
+}
+
+func writeHTMLTextFallback(file *os.File, elements []pdf.BoundedTextElement) error {
+	if _, err := fmt.Fprintln(file, "<pre class=\"raw-text\">"); err != nil {
+		return err
+	}
+
+	var previousY float64
+	hasPreviousY := false
+	for _, element := range elements {
+		text := strings.TrimSpace(element.Text)
+		if text == "" {
+			continue
+		}
+
+		if hasPreviousY && !approximatelyEqual(previousY, element.Y, geometryTolerance) {
+			if _, err := fmt.Fprintln(file); err != nil {
+				return err
+			}
+		} else if hasPreviousY {
+			if _, err := fmt.Fprint(file, " "); err != nil {
+				return err
+			}
+		}
+
+		if _, err := fmt.Fprint(file, html.EscapeString(text)); err != nil {
+			return err
+		}
+		previousY = element.Y
+		hasPreviousY = true
+	}
+
+	_, err := fmt.Fprintln(file, "</pre>")
+	return err
 }
 
 func writeHTMLTable(
